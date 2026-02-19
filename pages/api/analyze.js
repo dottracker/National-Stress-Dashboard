@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     const headlines = newsData.articles?.slice(0, 5).map(a => a.title).join(" | ");
 
     // 3. GEMINI "QUANT ANALYST" PROMPT
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     const prompt = `
       You are a Senior Economic Intelligence Officer at the Pentagon. 
       DATA: ${JSON.stringify(currentData)}

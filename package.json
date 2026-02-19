@@ -1,6 +1,8 @@
 {
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@supabase/supabase-js": "^2.97.0"
+    "@supabase/supabase-js": "^2.97.0",
+    "lucide-react": "^0.574.0",
+    "recharts": "^3.7.0"
   }
 }

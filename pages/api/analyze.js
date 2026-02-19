@@ -5,14 +5,50 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 export default async function handler(req, res) {
-  const { currentData, forceRefresh } = req.body;
+  if (req.method !== 'POST') return res.status(405).send('Method not allowed');
+
+  const { currentData, forceRefresh, userKey } = req.body;
 
   try {
-    // 1. CACHE CHECK (Same logic as before, 12-hour window)
+    // --- STEP 1: AUTHORIZATION GATEKEEPER ---
+    if (forceRefresh) {
+      const allowedKeys = process.env.AUTHORIZED_REFRESH_KEYS?.split(',') || [];
+      if (!userKey || !allowedKeys.includes(userKey)) {
+        return res.status(401).json({ 
+          error: "UNAUTHORIZED: Invalid Security Clearance Key." 
+        });
+      }
+      console.log("Authorization Confirmed. Bypassing cache for fresh analysis...");
+    }
+
+    // --- STEP 2: CACHE LOOKUP (Only if NOT forcing refresh) ---
     if (!forceRefresh) {
-      const { data: recent } = await supabase.from('intel_briefs').select('*').order('created_at', { ascending: false }).limit(1).single();
-      if (recent && (new Date() - new Date(recent.created_at) < 43200000)) {
-        return res.status(200).json({ analysis: recent, news: recent.news_snapshot, cached: true });
+      const { data: recentBrief, error: sbError } = await supabase
+        .from('intel_briefs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (recentBrief) {
+        const timeDiff = new Date() - new Date(recentBrief.created_at);
+        const twelveHours = 12 * 60 * 60 * 1000;
+
+        // If data is less than 12 hours old, serve it instantly
+        if (timeDiff < twelveHours) {
+          console.log("Serving cached intelligence...");
+          return res.status(200).json({ 
+            analysis: {
+                briefing: recentBrief.briefing,
+                reasoning: recentBrief.ai_reasoning,
+                weights: recentBrief.weights,
+                stress_score: recentBrief.stress_score,
+                defcon_level: recentBrief.defcon_level
+            }, 
+            news: recentBrief.news_snapshot,
+            cached: true 
+          });
+        }
       }
     }
 

@@ -1,68 +1,89 @@
 import { useState, useEffect } from 'react';
 import Head from 'next/head';
 import { 
-  LineChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid 
+  LineChart, Line, ResponsiveContainer, Tooltip, CartesianGrid 
 } from 'recharts';
-import { INDICES } from '../lib/indices'; // Ensure this file exists in /lib
+import { INDICES } from '../lib/indices'; 
 import { 
-  Activity, ShieldAlert, History, Sliders, Newspaper, RefreshCw, Server, AlertTriangle 
+  Activity, ShieldAlert, History, Sliders, Newspaper, RefreshCw, Server, AlertTriangle, Lock 
 } from 'lucide-react';
 
 export default function Dashboard({ initialData, lastUpdated }) {
   // --- STATE MANAGEMENT ---
-  const [data, setData] = useState(initialData); // Economic Data
+  const [data, setData] = useState(initialData); // Economic Data (FRED)
   const [weights, setWeights] = useState({}); // Indicator Importance (1-10)
   const [analysis, setAnalysis] = useState(null); // Gemini AI Result
   const [news, setNews] = useState([]); // News Headlines
   const [comparisonYear, setComparisonYear] = useState('2008'); // Ghost Line Year
   const [historicalData, setHistoricalData] = useState({}); // Ghost Line Data Store
   
-  // Loading States
+  // UI States
   const [loadingAI, setLoadingAI] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCached, setIsCached] = useState(false);
 
-  // --- 1. FETCH AI INTELLIGENCE (Client Side) ---
+  // --- 1. INTELLIGENCE FETCHING LOGIC (AI + SUPABASE) ---
   const fetchIntel = async (force = false) => {
+    let key = null;
+
+    // SECURITY CHECK: If forcing refresh, prompt for Android Key
+    if (force) {
+      key = window.prompt("⚠️ SECURITY CLEARANCE REQUIRED ⚠️\nEnter your Authorization Key (e.g. Cupcake_001...):");
+      if (!key) return; // User cancelled
+    }
+
     setIsRefreshing(true);
+    setLoadingAI(true);
+
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           currentData: initialData.map(d => ({ id: d.id, name: d.name, val: d.currentVal })),
-          forceRefresh: force 
+          forceRefresh: force,
+          userKey: key // Send the key to server for validation
         })
       });
       
       const result = await res.json();
+
+      // Handle Unauthorized Access (Wrong Key)
+      if (res.status === 401) {
+        alert(`ACCESS DENIED: ${result.error}`);
+        setIsRefreshing(false);
+        setLoadingAI(false);
+        return;
+      }
       
+      // Handle Success
       if (result.analysis) {
         setAnalysis(result.analysis);
         setNews(result.news || []);
-        // Only set weights if AI provided them, otherwise keep defaults
+        // Only override weights if AI provided them
         if (result.analysis.weights) setWeights(result.analysis.weights);
         setIsCached(result.cached);
       }
     } catch (e) {
       console.error("Intel Fetch Failed:", e);
+      alert("System Error: Intelligence gathering failed.");
     } finally {
       setIsRefreshing(false);
       setLoadingAI(false);
     }
   };
 
-  // Run AI fetch on initial load
+  // Run initial fetch on load (No key needed, checks cache first)
   useEffect(() => {
-    fetchIntel();
+    fetchIntel(false);
   }, []);
 
-  // --- 2. FETCH HISTORICAL "GHOST" DATA ---
+  // --- 2. HISTORICAL "GHOST" DATA FETCHING ---
   useEffect(() => {
     const fetchHistory = async () => {
       const historyBuffer = {};
       
-      // We fetch history for all indices in parallel
+      // Fetch history for all indices in parallel
       await Promise.all(initialData.map(async (item) => {
         try {
           const res = await fetch(`/api/history?series_id=${item.id}&year=${comparisonYear}`);
@@ -81,23 +102,21 @@ export default function Dashboard({ initialData, lastUpdated }) {
     if (comparisonYear) fetchHistory();
   }, [comparisonYear]);
 
-  // --- HELPER: MERGE CURRENT & HISTORY FOR CHARTS ---
+  // --- HELPER: MERGE DATA FOR RECHARTS ---
   const getChartData = (item) => {
-    // Current data comes from server props
     const current = item.chartData || [];
     const history = historicalData[item.id] || [];
     
-    // We map the current data and attach 'ghost' values from the history array
-    // Note: This is a rough overlay (Index 0 matches Index 0)
+    // Map current data and attach 'ghost' values from history array
+    // Note: This aligns by index (Period 1 vs Period 1)
     return current.map((point, i) => ({
       date: point.date,
       value: point.value,
-      ghost: history[i] || null // The historical value
+      ghost: history[i] || null 
     }));
   };
 
-  // --- HELPER: CALCULATE VISUAL STRESS BAR ---
-  // While AI decides the DEFCON, this bar visualizes the specific weighted inputs
+  // --- HELPER: VISUAL STABILITY BAR ---
   const calculateVisualStress = () => {
     let totalScore = 0;
     let maxScore = 0;
@@ -113,12 +132,12 @@ export default function Dashboard({ initialData, lastUpdated }) {
   const stressPercent = calculateVisualStress();
 
   return (
-    <div className="min-h-screen bg-[#05070a] text-slate-300 font-mono selection:bg-blue-500 selection:text-white">
+    <div className="min-h-screen bg-[#05070a] text-slate-300 font-mono selection:bg-blue-500 selection:text-white pb-10">
       <Head>
         <title>Pentagon Econ Dashboard | DEFCON {currentDefcon}</title>
       </Head>
 
-      {/* --- TOP STATUS BAR --- */}
+      {/* --- TOP NAVBAR --- */}
       <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
           <div className="flex items-center gap-3">
@@ -130,20 +149,25 @@ export default function Dashboard({ initialData, lastUpdated }) {
           </div>
           
           <div className="flex items-center gap-4">
-            {isCached && (
+            {isCached ? (
               <div className="hidden md:flex items-center gap-2 text-[10px] text-emerald-500 bg-emerald-950/30 px-2 py-1 rounded border border-emerald-900">
                 <Server size={10} /> ARCHIVE_MODE
               </div>
+            ) : (
+               <div className="hidden md:flex items-center gap-2 text-[10px] text-blue-500 bg-blue-950/30 px-2 py-1 rounded border border-blue-900">
+                <Activity size={10} /> LIVE_STREAM
+              </div>
             )}
+            
             <button 
               onClick={() => fetchIntel(true)}
               disabled={isRefreshing}
               className={`flex items-center gap-2 text-[10px] px-3 py-1.5 rounded border transition-all
                 ${isRefreshing 
                   ? 'bg-blue-900/20 border-blue-800 text-blue-400 cursor-wait' 
-                  : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-white'}`}
+                  : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-white hover:border-red-500'}`}
             >
-              <RefreshCw size={12} className={isRefreshing ? "animate-spin" : ""} />
+              {isRefreshing ? <RefreshCw size={12} className="animate-spin" /> : <Lock size={12} />}
               {isRefreshing ? "ANALYZING..." : "FORCE REFRESH"}
             </button>
           </div>
@@ -156,26 +180,27 @@ export default function Dashboard({ initialData, lastUpdated }) {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
           {/* DEFCON STATUS CARD */}
-          <div className="lg:col-span-4 bg-slate-900/40 border border-slate-800 rounded-xl p-6 flex flex-col justify-center items-center relative overflow-hidden">
-            <div className={`absolute inset-0 opacity-10 ${currentDefcon <= 2 ? 'bg-red-500 animate-pulse' : 'bg-blue-500'}`} />
+          <div className="lg:col-span-4 bg-slate-900/40 border border-slate-800 rounded-xl p-6 flex flex-col justify-center items-center relative overflow-hidden group">
+            <div className={`absolute inset-0 opacity-10 transition-colors duration-500 ${currentDefcon <= 2 ? 'bg-red-500 animate-pulse' : 'bg-blue-500'}`} />
             
             <h2 className="text-xs font-bold text-slate-500 tracking-[0.2em] mb-4 z-10">THREAT LEVEL</h2>
-            <div className={`z-10 text-8xl font-black tracking-tighter ${
-              currentDefcon === 1 ? 'text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.8)]' :
-              currentDefcon === 2 ? 'text-orange-500' :
+            <div className={`z-10 text-8xl font-black tracking-tighter transition-all duration-500 ${
+              currentDefcon === 1 ? 'text-red-600 drop-shadow-[0_0_25px_rgba(220,38,38,0.8)]' :
+              currentDefcon === 2 ? 'text-orange-500 drop-shadow-[0_0_15px_rgba(249,115,22,0.5)]' :
               currentDefcon === 3 ? 'text-yellow-500' :
               'text-blue-500'
             }`}>
               {currentDefcon}
             </div>
-            <div className="z-10 mt-4 w-full px-8">
+            
+            <div className="z-10 mt-6 w-full px-8">
               <div className="flex justify-between text-[10px] text-slate-400 mb-1 uppercase">
-                <span>System Stability</span>
-                <span>{100 - Math.round(stressPercent)}%</span>
+                <span>System Instability</span>
+                <span>{Math.round(stressPercent)}%</span>
               </div>
               <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
                 <div 
-                  className="h-full bg-gradient-to-r from-blue-500 to-red-500 transition-all duration-1000 ease-out" 
+                  className={`h-full transition-all duration-1000 ease-out ${stressPercent > 50 ? 'bg-red-500' : 'bg-blue-500'}`}
                   style={{ width: `${stressPercent}%` }} 
                 />
               </div>
@@ -183,17 +208,19 @@ export default function Dashboard({ initialData, lastUpdated }) {
           </div>
 
           {/* INTELLIGENCE BRIEFING */}
-          <div className="lg:col-span-8 bg-slate-900/40 border-l-4 border-blue-600 rounded-r-xl p-6 relative">
-            <div className="flex items-center gap-2 mb-4">
-              <span className="bg-blue-600/20 text-blue-400 border border-blue-600/50 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider">
-                Presidential Brief
-              </span>
-              {loadingAI && <span className="text-[10px] text-slate-500 animate-pulse">Decrypting Gemini Signal...</span>}
+          <div className="lg:col-span-8 bg-slate-900/40 border-l-4 border-blue-600 rounded-r-xl p-6 relative flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <span className="bg-blue-600/20 text-blue-400 border border-blue-600/50 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider">
+                  Presidential Brief
+                </span>
+                {loadingAI && <span className="text-[10px] text-slate-500 animate-pulse">Decrypting Gemini Signal...</span>}
+              </div>
+              
+              <p className="text-lg md:text-xl text-slate-200 font-serif italic leading-relaxed mb-6">
+                "{analysis?.briefing || "Initializing secure connection to intelligence database..."}"
+              </p>
             </div>
-            
-            <p className="text-lg md:text-xl text-slate-200 font-serif italic leading-relaxed mb-6">
-              "{analysis?.briefing || "Awaiting intelligence data..."}"
-            </p>
 
             <div className="bg-black/30 p-4 rounded border border-slate-800/50">
               <h4 className="text-[10px] text-slate-500 uppercase font-bold mb-1 flex items-center gap-1">
@@ -206,7 +233,7 @@ export default function Dashboard({ initialData, lastUpdated }) {
           </div>
         </div>
 
-        {/* --- SECTION 2: MAIN DASHBOARD --- */}
+        {/* --- SECTION 2: CONTROLS & CHARTS --- */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           
           {/* LEFT SIDEBAR */}
@@ -220,36 +247,36 @@ export default function Dashboard({ initialData, lastUpdated }) {
               <select 
                 value={comparisonYear}
                 onChange={(e) => setComparisonYear(e.target.value)}
-                className="w-full bg-[#0a0e14] border border-slate-700 text-slate-300 text-xs rounded p-2 outline-none focus:border-blue-500"
+                className="w-full bg-[#0a0e14] border border-slate-700 text-slate-300 text-xs rounded p-2 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
               >
                 <option value="2008">2008 (Financial Crisis)</option>
                 <option value="2020">2020 (COVID-19)</option>
                 <option value="2000">2000 (Dot Com)</option>
                 <option value="1974">1974 (Stagflation)</option>
               </select>
-              <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
-                <span className="w-3 h-0.5 bg-slate-600/50"></span>
-                <span>Ghost Line</span>
+              <div className="mt-3 flex items-center gap-2 text-[10px] text-slate-500">
+                <span className="w-4 h-0.5 border-t border-slate-500 border-dashed"></span>
+                <span>Ghost Line (Historical)</span>
               </div>
             </div>
 
             {/* WEIGHTING SLIDERS */}
             <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
               <h3 className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-                <Sliders size={12} /> Signal Weights
+                <Sliders size={12} /> Neural Weights
               </h3>
-              <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+              <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
                 {data.map(item => (
                   <div key={item.id}>
                     <div className="flex justify-between text-[10px] uppercase mb-1">
-                      <span className="text-slate-400 truncate w-24">{item.name}</span>
-                      <span className="text-blue-400">{weights[item.id] || 5}</span>
+                      <span className="text-slate-400 truncate w-28">{item.name}</span>
+                      <span className="text-blue-400 font-bold">{weights[item.id] || 5}</span>
                     </div>
                     <input 
                       type="range" min="1" max="10" 
                       value={weights[item.id] || 5}
                       onChange={(e) => setWeights({...weights, [item.id]: parseInt(e.target.value)})}
-                      className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                      className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:accent-blue-400"
                     />
                   </div>
                 ))}
@@ -259,13 +286,13 @@ export default function Dashboard({ initialData, lastUpdated }) {
             {/* NEWS FEED */}
             <div className="bg-slate-900/50 border border-slate-800 rounded-lg p-4">
               <h3 className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-                <Newspaper size={12} /> Live Wire
+                <Newspaper size={12} /> OSINT Feed
               </h3>
               <div className="space-y-3">
                 {news.length > 0 ? news.map((n, i) => (
-                  <a key={i} href={n.url} target="_blank" rel="noreferrer" className="block group">
-                    <p className="text-[9px] text-blue-500 font-bold mb-0.5 uppercase">{n.source.name}</p>
-                    <p className="text-[11px] leading-tight text-slate-400 group-hover:text-white transition-colors">
+                  <a key={i} href={n.url} target="_blank" rel="noreferrer" className="block group border-b border-slate-800/50 pb-2 last:border-0 last:pb-0">
+                    <p className="text-[9px] text-blue-500 font-bold mb-0.5 uppercase group-hover:text-blue-400">{n.source.name}</p>
+                    <p className="text-[11px] leading-tight text-slate-400 group-hover:text-white transition-colors line-clamp-2">
                       {n.title}
                     </p>
                   </a>
@@ -287,7 +314,7 @@ export default function Dashboard({ initialData, lastUpdated }) {
                   key={item.id} 
                   className={`relative p-5 rounded-lg border transition-all duration-300
                     ${isStressed 
-                      ? 'bg-red-950/10 border-red-900/40 hover:border-red-500/50' 
+                      ? 'bg-red-950/10 border-red-900/40 hover:border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.05)]' 
                       : 'bg-slate-900/40 border-slate-800 hover:border-blue-500/30'}`}
                 >
                   {/* CARD HEADER */}
@@ -297,7 +324,7 @@ export default function Dashboard({ initialData, lastUpdated }) {
                       <h3 className="text-sm font-bold text-slate-200">{item.name}</h3>
                     </div>
                     {isStressed ? (
-                      <AlertTriangle size={16} className="text-red-500" />
+                      <AlertTriangle size={16} className="text-red-500 animate-pulse" />
                     ) : (
                       <div className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
                     )}
@@ -317,8 +344,9 @@ export default function Dashboard({ initialData, lastUpdated }) {
                       <LineChart data={chartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                         <Tooltip 
-                          contentStyle={{ backgroundColor: '#000', border: '1px solid #333', fontSize: '10px' }}
+                          contentStyle={{ backgroundColor: '#05070a', border: '1px solid #334155', fontSize: '10px', color: '#cbd5e1' }}
                           itemStyle={{ color: '#fff' }}
+                          labelStyle={{ display: 'none' }}
                         />
                         {/* GHOST LINE (Historical) */}
                         <Line 
@@ -337,7 +365,7 @@ export default function Dashboard({ initialData, lastUpdated }) {
                           stroke={isStressed ? "#ef4444" : "#3b82f6"} 
                           strokeWidth={2} 
                           dot={false} 
-                          activeDot={{ r: 4, strokeWidth: 0 }}
+                          activeDot={{ r: 4, strokeWidth: 0, fill: '#fff' }}
                         />
                       </LineChart>
                     </ResponsiveContainer>
@@ -358,13 +386,13 @@ export async function getServerSideProps() {
   const apiKey = process.env.FRED_API_KEY;
   const baseUrl = 'https://api.stlouisfed.org/fred/series/observations';
 
-  // Import indices on server side
+  // Import indices configuration
   const { INDICES } = require('../lib/indices');
 
   // Fetch all indices in parallel
   const results = await Promise.all(INDICES.map(async (idx) => {
     try {
-      // Get last 15 periods
+      // Get last 15 periods (months or days depending on index)
       const response = await fetch(
         `${baseUrl}?series_id=${idx.id}&api_key=${apiKey}&file_type=json&sort_order=desc&limit=15`
       );
@@ -372,7 +400,7 @@ export async function getServerSideProps() {
       
       if (!data.observations) return null;
 
-      // Prepare data for Recharts (reverse to get ascending date)
+      // Prepare data for Recharts (reverse to get ascending date order: Oldest -> Newest)
       const chartData = data.observations.map(obs => ({
         date: obs.date,
         value: parseFloat(obs.value)
@@ -380,7 +408,7 @@ export async function getServerSideProps() {
 
       const currentVal = chartData[chartData.length - 1].value;
       
-      // Calculate 3-period average for logic comparison
+      // Calculate 3-period average for basic stress logic comparison
       const prevVals = chartData.slice(chartData.length - 4, chartData.length - 1);
       const avg3m = prevVals.reduce((sum, item) => sum + item.value, 0) / prevVals.length;
 
@@ -397,6 +425,7 @@ export async function getServerSideProps() {
     }
   }));
 
+  // Filter out any failed API calls to prevent crashes
   const cleanData = results.filter(Boolean);
 
   return {

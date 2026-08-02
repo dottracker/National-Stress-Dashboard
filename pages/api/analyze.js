@@ -8,112 +8,128 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-  const { calculatedScore, defconLevel, indicatorStates, forceRefresh, userKey } = req.body;
+  const { currentData, forceRefresh, userKey, quantitativeScore, defconLevel } = req.body;
 
   try {
-    // 1. Authorization Gatekeeper
+    // 1. Authorization Verification for Force Refresh
     if (forceRefresh) {
-      const allowedKeys = process.env.AUTHORIZED_REFRESH_KEYS?.split(',') || [];
+      const allowedKeys = process.env.AUTHORIZED_REFRESH_KEYS?.split(',').map(k => k.trim()) || [];
       if (!userKey || !allowedKeys.includes(userKey)) {
-        return res.status(401).json({ error: "UNAUTHORIZED: Invalid Security Clearance Key." });
+        return res.status(401).json({ 
+          error: "SECURITY ALERT: Clearance Key Invalid or Access Revoked." 
+        });
       }
     }
 
-    // 2. Cache Check (12-hour window)
+    // 2. Cache Lookup (12-hour expiration)
     if (!forceRefresh) {
-      const { data: recentBrief } = await supabase
+      const { data: recentBrief, error: sbError } = await supabase
         .from('intel_briefs')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(1)
         .single();
 
-      if (recentBrief) {
+      if (recentBrief && !sbError) {
         const timeDiff = new Date() - new Date(recentBrief.created_at);
-        if (timeDiff < 12 * 60 * 60 * 1000) {
-          return res.status(200).json({
+        const twelveHours = 12 * 60 * 60 * 1000;
+
+        if (timeDiff < twelveHours) {
+          return res.status(200).json({ 
             analysis: {
               briefing: recentBrief.briefing,
               reasoning: recentBrief.ai_reasoning,
               stress_score: recentBrief.stress_score,
               defcon_level: recentBrief.defcon_level
-            },
+            }, 
             news: recentBrief.news_snapshot || [],
-            cached: true
+            cached: true 
           });
         }
       }
     }
 
-    // 3. Fetch External Signals (NewsAPI)
-    let articles = [];
+    // 3. News Signals Fetching
+    let newsArticles = [];
     try {
       const newsRes = await fetch(
-        `https://newsapi.org/v2/everything?q=US%20Economy%20Recession%20OR%20Inflation&sortBy=publishedAt&pageSize=5&apiKey=${process.env.NEWS_API_KEY}`
+        `https://newsapi.org/v2/everything?q=US%20Economy%20AND%20(Recession%20OR%20Fed%20OR%20Inflation)&sortBy=publishedAt&pageSize=6&apiKey=${process.env.NEWS_API_KEY}`
       );
       const newsData = await newsRes.json();
-      articles = newsData.articles || [];
-    } catch (e) {
-      console.error("News fetch failed:", e);
+      newsArticles = (newsData.articles || []).map(a => ({
+        title: a.title,
+        source: { name: a.source?.name || 'OSINT WIRE' },
+        publishedAt: a.publishedAt,
+        url: a.url
+      }));
+    } catch (newsErr) {
+      console.error("News wire connection error:", newsErr);
     }
 
-    const headlines = articles.map(a => `${a.source.name}: ${a.title}`).join(" | ");
+    const headlinesText = newsArticles.map(a => `[${a.source.name}] ${a.title}`).join(" | ");
 
-    // 4. Gemini Strategic Assessment Synthesis
+    // 4. Gemini 2.5 Structured Output Prompt
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash-lite",
       generationConfig: { responseMimeType: "application/json" }
     });
 
     const prompt = `
-      You are the Chief Macroeconomic Intelligence Officer for the Joint Chiefs of Staff.
+      You are the Chief Economic Intelligence Officer in the White House Situation Room.
       
-      QUANTITATIVE AGGREGATE METRICS:
-      - Calculated Recession Risk Score: ${calculatedScore}%
-      - Current Threat Level: DEFCON ${defconLevel}
-      - Metric Breakdown: ${JSON.stringify(indicatorStates)}
-      - Real-time News Feeds: ${headlines || "No signals"}
+      MATHEMATICAL MACRO MODEL DATA:
+      - Composite Recession Probability Score: ${quantitativeScore}%
+      - Current DEFCON Status: DEFCON ${defconLevel}
+      - Core Indicator States: ${JSON.stringify(currentData)}
+      - Real-Time Global OSINT News Wire: ${headlinesText || "No active signals."}
 
-      TASK:
-      Generate an executive briefing based on the calculated quantitative status above.
-      Do not alter the score or DEFCON level. Synthesize the findings.
+      INSTRUCTIONS:
+      1. Write a direct 2-sentence executive summary briefing for the President.
+      2. Write a precise 3-4 sentence tactical reasoning section detailing why the indicators triggered these threat levels (mention Sahm Rule, yield curve, or credit spreads if relevant).
 
-      JSON OUTPUT STRUCTURE:
+      OUTPUT FORMAT MUST BE EXACT JSON:
       {
-        "briefing": "Direct 2-sentence executive summary for the White House Situation Room.",
-        "reasoning": "Technical 3-4 sentence macro analysis referencing Sahm rule, yield curve, or credit spreads."
+        "briefing": "string",
+        "reasoning": "string"
       }
     `;
 
     const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text());
+    const parsedText = result.response.text().trim();
+    const analysisJson = JSON.parse(parsedText);
 
-    const finalPayload = {
-      briefing: parsed.briefing,
-      reasoning: parsed.reasoning,
-      stress_score: calculatedScore,
+    const fullAnalysisPayload = {
+      briefing: analysisJson.briefing,
+      reasoning: analysisJson.reasoning,
+      stress_score: quantitativeScore,
       defcon_level: defconLevel
     };
 
-    // 5. Store in Supabase
+    // 5. Database Archive Update
     try {
       await supabase.from('intel_briefs').insert([{
-        briefing: finalPayload.briefing,
-        ai_reasoning: finalPayload.reasoning,
-        stress_score: calculatedScore,
+        briefing: fullAnalysisPayload.briefing,
+        ai_reasoning: fullAnalysisPayload.reasoning,
+        stress_score: quantitativeScore,
         defcon_level: defconLevel,
-        news_snapshot: articles
+        news_snapshot: newsArticles
       }]);
     } catch (dbErr) {
-      console.error("Database archive write failed:", dbErr);
+      console.error("Supabase archiving failed:", dbErr);
     }
 
-    return res.status(200).json({ analysis: finalPayload, news: articles, cached: false });
+    return res.status(200).json({ 
+      analysis: fullAnalysisPayload, 
+      news: newsArticles, 
+      cached: false 
+    });
 
   } catch (error) {
-    console.error("API handler failure:", error);
-    return res.status(500).json({ error: error.message || "Internal server error" });
+    console.error("Intel Handler Error:", error);
+    return res.status(500).json({ error: error.message || "Failed to generate intelligence report" });
   }
 }
